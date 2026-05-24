@@ -188,18 +188,19 @@ class RenderScene:
         trimesh.PointCloud(vertices=all_points).export(output_path)
 
 
-cam_rig = OrbitZCamRig()
-cam_pose_list = [cam_rig.get_camera_pose(angle) for angle in np.linspace(0, 2 * np.pi, num=16, endpoint=False)]
+if __name__ == "__main__":
+    cam_rig = OrbitZCamRig()
+    cam_pose_list = [cam_rig.get_camera_pose(angle) for angle in np.linspace(0, 2 * np.pi, num=16, endpoint=False)]
 
-cameras = [RenderCamera(pose=pose) for pose in cam_pose_list]
+    cameras = [RenderCamera(pose=pose) for pose in cam_pose_list]
 
-render_scene = RenderScene(cameras[0])
-render_scene.export_pointcloud("data/pyrender_scene.ply", max_points_per_primitive=500)
+    render_scene = RenderScene(cameras[0])
+    render_scene.export_pointcloud("data/pyrender_scene.ply", max_points_per_primitive=500)
 
-for idx, camera in enumerate(cameras):
-    render_scene.camera = camera
-    r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
-    color, depth = r.render(render_scene.scene)
-    cv2.imwrite(f"data/pyrender_scene_{idx}.png", cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+    for idx, camera in enumerate(cameras):
+        render_scene.camera = camera
+        r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
+        color, depth = r.render(render_scene.scene)
+        cv2.imwrite(f"data/pyrender_scene_{idx}.png", cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
 
-r.delete()
+    r.delete()
