@@ -35,11 +35,11 @@ class OrbitZCamRig:
         self,
         z_height=0.5,
         radius=0.5,
-        lookAtTarget: Optional[tuple[float, float, float]] = None,
+        look_at_target: Optional[tuple[float, float, float]] = None,
     ):
         self.z_height = z_height
         self.radius = radius
-        self.lookAtTarget = np.ndarray(lookAtTarget) if lookAtTarget is not None else np.array([0.0, 0.0, 0.0])
+        self.lookAtTarget = np.ndarray(look_at_target) if look_at_target is not None else np.array([0.0, 0.0, 0.0])
 
     def get_camera_pose(self, angle_rad: float = 0.0) -> np.ndarray:
         cam_x = self.radius * np.cos(angle_rad)
@@ -75,8 +75,8 @@ class RenderCamera(BaseModel):
         description="Width and height of the rendered image in pixels.",
     )
 
-    # 4x4 camera-to-world matrix.
-    pose: np.ndarray = Field(default_factory=lambda: OrbitZCamRig().get_camera_pose())
+    # 4x4 camera-to-world matrix (OpenGL format)
+    pose: np.typing.NDArray[np.float64] = Field(default_factory=lambda: OrbitZCamRig().get_camera_pose())
 
     @field_validator("pose")
     @classmethod
@@ -89,6 +89,17 @@ class RenderCamera(BaseModel):
     @property
     def camera(self) -> PerspectiveCamera:
         return PerspectiveCamera(yfov=self.yfov)
+
+
+class OCVCameraIntrinsics(BaseModel):
+    """Camera config for OpenCV-based rendering."""
+
+    focal_length: Tuple[float, float] = Field(default=(800.0, 800.0))
+    principal_point: Tuple[float, float] = Field(default=(320.0, 240.0))
+    distortion_coeffs: Tuple[float, float, float, float, float] = Field(
+        default=(0.0, 0.0, 0.0, 0.0, 0.0),
+        description="Distortion coefficients (k1, k2, p1, p2, k3) for the camera.",
+    )
 
 
 class RenderScene:
