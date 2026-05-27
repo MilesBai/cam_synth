@@ -64,6 +64,42 @@ class OrbitZCamRig:
         return pose
 
 
+class OCVCamIntrinsics(BaseModel):
+    """Camera config for OpenCV-based rendering."""
+
+    focal_length: Tuple[float, float] = Field(default=(800.0, 800.0))
+    principal_point: Tuple[float, float] = Field(default=(320.0, 240.0))
+    distortion_coeffs: Tuple[float, float, float, float, float] = Field(
+        default=(0.0, 0.0, 0.0, 0.0, 0.0),
+        description="Distortion coefficients (k1, k2, p1, p2, k3) for the camera.",
+    )
+
+    def camera_matrix(self) -> np.ndarray:
+        """Return the 3x3 OpenCV camera matrix K."""
+        fx, fy = self.focal_length
+        cx, cy = self.principal_point
+        return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    def dist_coeffs(self) -> np.ndarray:
+        """Return distortion coefficients as a (5,) array."""
+        return np.array(self.distortion_coeffs, dtype=np.float64)
+
+
+class OCVCamExtrinsics(BaseModel):
+    rvecs: Tuple[float, float, float] = Field(default=(0.0, 0.0, 0.0))
+    tvecs: Tuple[float, float, float] = Field(default=(0.0, 0.0, 0.0))
+
+    def rotation_matrix(self) -> np.ndarray:
+        """Return the 3x3 rotation matrix from the Rodrigues rvec."""
+        rvec = np.array(self.rvecs, dtype=np.float64)
+        R, _ = cv2.Rodrigues(rvec)
+        return R
+
+    def translation_vector(self) -> np.ndarray:
+        """Return the translation vector as a (3,) array."""
+        return np.array(self.tvecs, dtype=np.float64)
+
+
 class RenderCamera(BaseModel):
     """Camera config for pyrender scenes."""
 
@@ -90,16 +126,24 @@ class RenderCamera(BaseModel):
     def camera(self) -> PerspectiveCamera:
         return PerspectiveCamera(yfov=self.yfov)
 
+    def to_ocv_cam_param(self) -> tuple[OCVCamIntrinsics, OCVCamExtrinsics]:
+        """Convert yfov + screen_size to OpenCV camera intrinsics (square pixels assumed)."""
+        w, h = self.screen_size
+        fy = (h / 2.0) / np.tan(self.yfov / 2.0)
+        fx = fy
+        cx = w / 2.0
+        cy = h / 2.0
+        intrinsics = OCVCamIntrinsics(focal_length=(fx, fy), principal_point=(cx, cy))
 
-class OCVCameraIntrinsics(BaseModel):
-    """Camera config for OpenCV-based rendering."""
-
-    focal_length: Tuple[float, float] = Field(default=(800.0, 800.0))
-    principal_point: Tuple[float, float] = Field(default=(320.0, 240.0))
-    distortion_coeffs: Tuple[float, float, float, float, float] = Field(
-        default=(0.0, 0.0, 0.0, 0.0, 0.0),
-        description="Distortion coefficients (k1, k2, p1, p2, k3) for the camera.",
-    )
+        T_cw = np.linalg.inv(self.pose)
+        # Flip Y and Z to go from OpenGL to OpenCV camera convention
+        flip = np.diag([1.0, -1.0, -1.0, 1.0])
+        T_cw_ocv = flip @ T_cw
+        R = T_cw_ocv[:3, :3]
+        t = T_cw_ocv[:3, 3]
+        rvec, _ = cv2.Rodrigues(R)
+        extrinsics = OCVCamExtrinsics(rvecs=tuple(rvec.flatten().tolist()), tvecs=tuple(t.tolist()))
+        return intrinsics, extrinsics
 
 
 class RenderScene:
