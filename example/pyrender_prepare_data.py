@@ -100,6 +100,14 @@ class OCVCamExtrinsics(BaseModel):
         return np.array(self.tvecs, dtype=np.float64)
 
 
+class OCVCamParam(BaseModel):
+    """Combined camera parameters for OpenCV-based rendering."""
+
+    intrinsics: OCVCamIntrinsics
+    extrinsics: OCVCamExtrinsics
+    cam_size: Tuple[int, int] = Field(description="Width and height of the camera image in pixels.")
+
+
 class RenderCamera(BaseModel):
     """Camera config for pyrender scenes."""
 
@@ -143,7 +151,7 @@ class RenderCamera(BaseModel):
         t = T_cw_ocv[:3, 3]
         rvec, _ = cv2.Rodrigues(R)
         extrinsics = OCVCamExtrinsics(rvecs=tuple(rvec.flatten().tolist()), tvecs=tuple(t.tolist()))
-        return intrinsics, extrinsics
+        return OCVCamParam(intrinsics=intrinsics, extrinsics=extrinsics, cam_size=self.screen_size)
 
 
 class RenderScene:
@@ -220,7 +228,8 @@ class RenderScene:
         self._camera = camera_obj
         self.scene.set_pose(self.cam_node, camera_obj.pose)
 
-    def export_pointcloud(self, output_path, max_points_per_primitive=None):
+    def export_pointcloud_ply(self, output_path, max_points_per_primitive=None):
+        """Export a point cloud of the entire scene by transforming all mesh vertices to world coordinates."""
         all_points = []
 
         for node in self.scene.mesh_nodes:
@@ -249,13 +258,44 @@ if __name__ == "__main__":
 
     cameras = [RenderCamera(pose=pose) for pose in cam_pose_list]
 
+    ply_path = "data/pyrender_scene.ply"
+    render_im_path_fmt = "data/scene_{}.png"
+    render_cam_params_fmt = "data/scene_cam_param_{}.json"
     render_scene = RenderScene(cameras[0])
-    render_scene.export_pointcloud("data/pyrender_scene.ply", max_points_per_primitive=500)
+    render_scene.export_pointcloud_ply(ply_path, max_points_per_primitive=500)
 
     for idx, camera in enumerate(cameras):
         render_scene.camera = camera
         r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
         color, depth = r.render(render_scene.scene)
-        cv2.imwrite(f"data/pyrender_scene_{idx}.png", cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+        cv2.imwrite(render_im_path_fmt.format(idx), cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+        r.delete()
 
-    r.delete()
+        ocv_cam_param = camera.to_ocv_cam_param()
+        with open(render_cam_params_fmt.format(idx), "w") as f:
+            f.write(ocv_cam_param.model_dump_json(indent=4))
+
+    def load_pointcloud(ply_path):
+        pc = trimesh.load(ply_path)
+        points = np.array(pc.vertices)
+        return points
+
+    object_points = load_pointcloud(ply_path)
+
+    # project 3d points to 2d using the camera parameters
+    for idx, camera in enumerate(cameras):
+        cam_param_path = render_cam_params_fmt.format(idx)
+        with open(cam_param_path, "r") as f:
+            cam_param_json = f.read()
+        cam_param = OCVCamParam.model_validate_json(cam_param_json)
+        img_points, _ = cv2.projectPoints(
+            object_points,
+            np.array(cam_param.extrinsics.rvecs),
+            np.array(cam_param.extrinsics.tvecs),
+            cam_param.intrinsics.camera_matrix(),
+            cam_param.intrinsics.dist_coeffs(),
+        )
+        preview_img = cv2.imread(render_im_path_fmt.format(idx))
+        for pt in img_points:
+            cv2.circle(preview_img, (int(pt[0][0]), int(pt[0][1])), radius=2, color=(0, 255, 0), thickness=-1)
+        cv2.imwrite(f"data/scene_{idx}_projected.png", preview_img)
