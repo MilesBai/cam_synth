@@ -1,6 +1,3 @@
-"""Examples of using pyrender for viewing and offscreen rendering.
-"""
-
 import numpy as np
 import trimesh
 from typing import Optional, Tuple
@@ -17,7 +14,9 @@ from pyrender import (
     Scene,
     OffscreenRenderer,
 )
+from pyrender.constants import RenderFlags
 import cv2
+import OpenImageIO as oiio
 
 
 class OrbitZCamRig:
@@ -35,11 +34,11 @@ class OrbitZCamRig:
         self,
         z_height=0.5,
         radius=0.5,
-        lookAtTarget: Optional[tuple[float, float, float]] = None,
+        look_at_target: Optional[tuple[float, float, float]] = None,
     ):
         self.z_height = z_height
         self.radius = radius
-        self.lookAtTarget = np.ndarray(lookAtTarget) if lookAtTarget is not None else np.array([0.0, 0.0, 0.0])
+        self.lookAtTarget = np.ndarray(look_at_target) if look_at_target is not None else np.array([0.0, 0.0, 0.0])
 
     def get_camera_pose(self, angle_rad: float = 0.0) -> np.ndarray:
         cam_x = self.radius * np.cos(angle_rad)
@@ -50,18 +49,62 @@ class OrbitZCamRig:
         forward /= np.linalg.norm(forward)
 
         up = np.array([0.0, 0.0, 1.0])
-        right = np.cross(forward, up)  # Bug 1 fix: forward × up, not up × forward
+        right = np.cross(forward, up)
         right /= np.linalg.norm(right)
 
-        up = np.cross(right, forward)  # Bug 2 fix: right × forward, not forward × right
+        up = np.cross(right, forward)
 
         pose = np.eye(4)
         pose[0:3, 0] = right
         pose[0:3, 1] = up
-        pose[0:3, 2] = -forward  # Bug 3 fix: OpenGL camera looks down -Z
+        pose[0:3, 2] = -forward
         pose[0:3, 3] = [cam_x, cam_y, cam_z]
 
         return pose
+
+
+class OCVCamIntrinsics(BaseModel):
+    """Camera config for OpenCV-based rendering."""
+
+    focal_length: Tuple[float, float] = Field(default=(800.0, 800.0))
+    principal_point: Tuple[float, float] = Field(default=(320.0, 240.0))
+    distortion_coeffs: Tuple[float, float, float, float, float] = Field(
+        default=(0.0, 0.0, 0.0, 0.0, 0.0),
+        description="Distortion coefficients (k1, k2, p1, p2, k3) for the camera.",
+    )
+
+    def camera_matrix(self) -> np.ndarray:
+        """Return the 3x3 OpenCV camera matrix K."""
+        fx, fy = self.focal_length
+        cx, cy = self.principal_point
+        return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+    def dist_coeffs(self) -> np.ndarray:
+        """Return distortion coefficients as a (5,) array."""
+        return np.array(self.distortion_coeffs, dtype=np.float64)
+
+
+class OCVCamExtrinsics(BaseModel):
+    rvecs: Tuple[float, float, float] = Field(default=(0.0, 0.0, 0.0))
+    tvecs: Tuple[float, float, float] = Field(default=(0.0, 0.0, 0.0))
+
+    def rotation_matrix(self) -> np.ndarray:
+        """Return the 3x3 rotation matrix from the Rodrigues rvec."""
+        rvec = np.array(self.rvecs, dtype=np.float64)
+        R, _ = cv2.Rodrigues(rvec)
+        return R
+
+    def translation_vector(self) -> np.ndarray:
+        """Return the translation vector as a (3,) array."""
+        return np.array(self.tvecs, dtype=np.float64)
+
+
+class OCVCamParam(BaseModel):
+    """Combined camera parameters for OpenCV-based rendering."""
+
+    intrinsics: OCVCamIntrinsics
+    extrinsics: OCVCamExtrinsics
+    cam_size: Tuple[int, int] = Field(description="Width and height of the camera image in pixels.")
 
 
 class RenderCamera(BaseModel):
@@ -75,8 +118,8 @@ class RenderCamera(BaseModel):
         description="Width and height of the rendered image in pixels.",
     )
 
-    # 4x4 camera-to-world matrix.
-    pose: np.ndarray = Field(default_factory=lambda: OrbitZCamRig().get_camera_pose())
+    # 4x4 camera-to-world matrix (OpenGL format)
+    pose: np.typing.NDArray[np.float64] = Field(default_factory=lambda: OrbitZCamRig().get_camera_pose())
 
     @field_validator("pose")
     @classmethod
@@ -90,14 +133,33 @@ class RenderCamera(BaseModel):
     def camera(self) -> PerspectiveCamera:
         return PerspectiveCamera(yfov=self.yfov)
 
+    def to_ocv_cam_param(self) -> tuple[OCVCamIntrinsics, OCVCamExtrinsics]:
+        """Convert yfov + screen_size to OpenCV camera intrinsics (square pixels assumed)."""
+        w, h = self.screen_size
+        fy = (h / 2.0) / np.tan(self.yfov / 2.0)
+        fx = fy
+        cx = w / 2.0
+        cy = h / 2.0
+        intrinsics = OCVCamIntrinsics(focal_length=(fx, fy), principal_point=(cx, cy))
+
+        T_cw = np.linalg.inv(self.pose)
+        # Flip Y and Z to go from OpenGL to OpenCV camera convention
+        flip = np.diag([1.0, -1.0, -1.0, 1.0])
+        T_cw_ocv = flip @ T_cw
+        R = T_cw_ocv[:3, :3]
+        t = T_cw_ocv[:3, 3]
+        rvec, _ = cv2.Rodrigues(R)
+        extrinsics = OCVCamExtrinsics(rvecs=tuple(rvec.flatten().tolist()), tvecs=tuple(t.tolist()))
+        return OCVCamParam(intrinsics=intrinsics, extrinsics=extrinsics, cam_size=self.screen_size)
+
 
 class RenderScene:
-    def __init__(self, camera_obj: RenderCamera):
+    def __init__(self, camera_obj: RenderCamera, light_pose: np.ndarray):
         self.scene = Scene(ambient_light=np.array([0.02, 0.02, 0.02, 1.0]))
         self._camera = camera_obj
         self._build_meshes()
         self._build_lights()
-        self._add_nodes()
+        self._add_nodes(light_pose)
 
     def _build_meshes(self):
         fuze_trimesh = trimesh.load("./models/fuze.obj")
@@ -129,7 +191,7 @@ class RenderScene:
         self._points_mesh = Mesh.from_points(points, colors=np.random.uniform(size=points.shape))
 
     def _build_lights(self):
-        self._direc_l = DirectionalLight(color=np.ones(3), intensity=1.0)
+        self._direc_l = DirectionalLight(color=np.ones(3), intensity=6.0)
         self._spot_l = SpotLight(
             color=np.ones(3),
             intensity=10.0,
@@ -138,7 +200,7 @@ class RenderScene:
         )
         self._point_l = PointLight(color=np.ones(3), intensity=10.0)
 
-    def _add_nodes(self):
+    def _add_nodes(self, light_pose: np.ndarray):
         cam_pose = self._camera.pose
 
         self.scene.add_node(
@@ -151,8 +213,9 @@ class RenderScene:
         self.drill_node = self.scene.add(self._drill_mesh, pose=self._drill_pose)
         self.scene.add(self._bottle_mesh, pose=self._bottle_pose)
         self.scene.add(self._wood_mesh)
-        self.scene.add(self._direc_l, pose=cam_pose)
-        self.scene.add(self._spot_l, pose=cam_pose)
+        self.scene.add(self._direc_l, pose=light_pose)
+        self.scene.add(self._spot_l, pose=light_pose)
+        # self.scene.add(self._point_l, pose=light_pose)
 
         self.cam_node = self.scene.add(self._camera.camera, pose=cam_pose)
 
@@ -165,7 +228,8 @@ class RenderScene:
         self._camera = camera_obj
         self.scene.set_pose(self.cam_node, camera_obj.pose)
 
-    def export_pointcloud(self, output_path, max_points_per_primitive=None):
+    def export_pointcloud_ply(self, output_path, max_points_per_primitive=None):
+        """Export a point cloud of the entire scene by transforming all mesh vertices to world coordinates."""
         all_points = []
 
         for node in self.scene.mesh_nodes:
@@ -193,14 +257,59 @@ if __name__ == "__main__":
     cam_pose_list = [cam_rig.get_camera_pose(angle) for angle in np.linspace(0, 2 * np.pi, num=16, endpoint=False)]
 
     cameras = [RenderCamera(pose=pose) for pose in cam_pose_list]
+    light_pose = cam_rig.get_camera_pose(0)
 
-    render_scene = RenderScene(cameras[0])
-    render_scene.export_pointcloud("data/pyrender_scene.ply", max_points_per_primitive=500)
+    ply_path = "data/pyrender_scene.ply"
+    render_im_path_fmt, render_z_buf_fmt = "data/scene_{}.png", "data/depth_{}.exr"
+    render_cam_params_fmt = "data/scene_cam_param_{}.json"
+    render_scene = RenderScene(cameras[0], light_pose)
+    render_scene.export_pointcloud_ply(ply_path, max_points_per_primitive=500)
 
     for idx, camera in enumerate(cameras):
         render_scene.camera = camera
         r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
-        color, depth = r.render(render_scene.scene)
-        cv2.imwrite(f"data/pyrender_scene_{idx}.png", cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+        color, depth = r.render(render_scene.scene, flags=RenderFlags.SHADOWS_DIRECTIONAL | RenderFlags.OFFSCREEN)
+        cv2.imwrite(render_im_path_fmt.format(idx), cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+        # Image.fromarray(depth).save(render_z_buf_fmt.format(idx))
+        h, w = depth.shape
+        spec = oiio.ImageSpec(w, h, 1, oiio.FLOAT)
+        spec.channelnames = ["Z"]
+        out = oiio.ImageOutput.create(render_z_buf_fmt.format(idx))
+        if out is None:
+            raise RuntimeError(f"Could not create output: {oiio.geterror()}")
+        out.open(render_z_buf_fmt.format(idx), spec)
+        out.write_image(depth.astype(np.float32).flatten())
+        out.close()
+        r.delete()
 
-    r.delete()
+        ocv_cam_param = camera.to_ocv_cam_param()
+        with open(render_cam_params_fmt.format(idx), "w") as f:
+            f.write(ocv_cam_param.model_dump_json(indent=4))
+
+    # using opencv to validate the camera parameters by projecting the 3d points to 2d
+    cv_projection_fmt = "data/opencv_param_{}_projected.png"
+
+    def load_pointcloud(ply_path):
+        pc = trimesh.load(ply_path)
+        points = np.array(pc.vertices)
+        return points
+
+    object_points = load_pointcloud(ply_path)
+
+    # project 3d points to 2d using the camera parameters
+    for idx, camera in enumerate(cameras):
+        cam_param_path = render_cam_params_fmt.format(idx)
+        with open(cam_param_path, "r") as f:
+            cam_param_json = f.read()
+        cam_param = OCVCamParam.model_validate_json(cam_param_json)
+        img_points, _ = cv2.projectPoints(
+            object_points,
+            np.array(cam_param.extrinsics.rvecs),
+            np.array(cam_param.extrinsics.tvecs),
+            cam_param.intrinsics.camera_matrix(),
+            cam_param.intrinsics.dist_coeffs(),
+        )
+        preview_img = cv2.imread(render_im_path_fmt.format(idx))
+        for pt in img_points:
+            cv2.circle(preview_img, (int(pt[0][0]), int(pt[0][1])), radius=3, color=(0, 255, 0), thickness=-1)
+        cv2.imwrite(cv_projection_fmt.format(idx), preview_img)
