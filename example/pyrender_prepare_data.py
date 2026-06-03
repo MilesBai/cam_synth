@@ -16,6 +16,7 @@ from pyrender import (
 )
 from pyrender.constants import RenderFlags
 import cv2
+import OpenImageIO as oiio
 
 
 class OrbitZCamRig:
@@ -267,9 +268,18 @@ if __name__ == "__main__":
     for idx, camera in enumerate(cameras):
         render_scene.camera = camera
         r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
-        color, depth = r.render(render_scene.scene, flags=RenderFlags.SHADOWS_DIRECTIONAL)
+        color, depth = r.render(render_scene.scene, flags=RenderFlags.SHADOWS_DIRECTIONAL | RenderFlags.OFFSCREEN)
         cv2.imwrite(render_im_path_fmt.format(idx), cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
-        cv2.imwrite(render_z_buf_fmt.format(idx), depth.astype(np.float32))
+        # Image.fromarray(depth).save(render_z_buf_fmt.format(idx))
+        h, w = depth.shape
+        spec = oiio.ImageSpec(w, h, 1, oiio.FLOAT)
+        spec.channelnames = ["Z"]
+        out = oiio.ImageOutput.create(render_z_buf_fmt.format(idx))
+        if out is None:
+            raise RuntimeError(f"Could not create output: {oiio.geterror()}")
+        out.open(render_z_buf_fmt.format(idx), spec)
+        out.write_image(depth.astype(np.float32).flatten())
+        out.close()
         r.delete()
 
         ocv_cam_param = camera.to_ocv_cam_param()
