@@ -1,6 +1,3 @@
-"""Examples of using pyrender for viewing and offscreen rendering.
-"""
-
 import numpy as np
 import trimesh
 from typing import Optional, Tuple
@@ -17,6 +14,7 @@ from pyrender import (
     Scene,
     OffscreenRenderer,
 )
+from pyrender.constants import RenderFlags
 import cv2
 
 
@@ -50,15 +48,15 @@ class OrbitZCamRig:
         forward /= np.linalg.norm(forward)
 
         up = np.array([0.0, 0.0, 1.0])
-        right = np.cross(forward, up)  # Bug 1 fix: forward × up, not up × forward
+        right = np.cross(forward, up)
         right /= np.linalg.norm(right)
 
-        up = np.cross(right, forward)  # Bug 2 fix: right × forward, not forward × right
+        up = np.cross(right, forward)
 
         pose = np.eye(4)
         pose[0:3, 0] = right
         pose[0:3, 1] = up
-        pose[0:3, 2] = -forward  # Bug 3 fix: OpenGL camera looks down -Z
+        pose[0:3, 2] = -forward
         pose[0:3, 3] = [cam_x, cam_y, cam_z]
 
         return pose
@@ -155,12 +153,12 @@ class RenderCamera(BaseModel):
 
 
 class RenderScene:
-    def __init__(self, camera_obj: RenderCamera):
+    def __init__(self, camera_obj: RenderCamera, light_pose: np.ndarray):
         self.scene = Scene(ambient_light=np.array([0.02, 0.02, 0.02, 1.0]))
         self._camera = camera_obj
         self._build_meshes()
         self._build_lights()
-        self._add_nodes()
+        self._add_nodes(light_pose)
 
     def _build_meshes(self):
         fuze_trimesh = trimesh.load("./models/fuze.obj")
@@ -192,7 +190,7 @@ class RenderScene:
         self._points_mesh = Mesh.from_points(points, colors=np.random.uniform(size=points.shape))
 
     def _build_lights(self):
-        self._direc_l = DirectionalLight(color=np.ones(3), intensity=1.0)
+        self._direc_l = DirectionalLight(color=np.ones(3), intensity=6.0)
         self._spot_l = SpotLight(
             color=np.ones(3),
             intensity=10.0,
@@ -201,7 +199,7 @@ class RenderScene:
         )
         self._point_l = PointLight(color=np.ones(3), intensity=10.0)
 
-    def _add_nodes(self):
+    def _add_nodes(self, light_pose: np.ndarray):
         cam_pose = self._camera.pose
 
         self.scene.add_node(
@@ -214,8 +212,9 @@ class RenderScene:
         self.drill_node = self.scene.add(self._drill_mesh, pose=self._drill_pose)
         self.scene.add(self._bottle_mesh, pose=self._bottle_pose)
         self.scene.add(self._wood_mesh)
-        self.scene.add(self._direc_l, pose=cam_pose)
-        self.scene.add(self._spot_l, pose=cam_pose)
+        self.scene.add(self._direc_l, pose=light_pose)
+        self.scene.add(self._spot_l, pose=light_pose)
+        # self.scene.add(self._point_l, pose=light_pose)
 
         self.cam_node = self.scene.add(self._camera.camera, pose=cam_pose)
 
@@ -257,23 +256,28 @@ if __name__ == "__main__":
     cam_pose_list = [cam_rig.get_camera_pose(angle) for angle in np.linspace(0, 2 * np.pi, num=16, endpoint=False)]
 
     cameras = [RenderCamera(pose=pose) for pose in cam_pose_list]
+    light_pose = cam_rig.get_camera_pose(0)
 
     ply_path = "data/pyrender_scene.ply"
-    render_im_path_fmt = "data/scene_{}.png"
+    render_im_path_fmt, render_z_buf_fmt = "data/scene_{}.png", "data/depth_{}.exr"
     render_cam_params_fmt = "data/scene_cam_param_{}.json"
-    render_scene = RenderScene(cameras[0])
+    render_scene = RenderScene(cameras[0], light_pose)
     render_scene.export_pointcloud_ply(ply_path, max_points_per_primitive=500)
 
     for idx, camera in enumerate(cameras):
         render_scene.camera = camera
         r = OffscreenRenderer(viewport_width=camera.screen_size[0], viewport_height=camera.screen_size[1])
-        color, depth = r.render(render_scene.scene)
+        color, depth = r.render(render_scene.scene, flags=RenderFlags.SHADOWS_DIRECTIONAL)
         cv2.imwrite(render_im_path_fmt.format(idx), cv2.cvtColor(color, cv2.COLOR_RGBA2BGRA))
+        cv2.imwrite(render_z_buf_fmt.format(idx), depth.astype(np.float32))
         r.delete()
 
         ocv_cam_param = camera.to_ocv_cam_param()
         with open(render_cam_params_fmt.format(idx), "w") as f:
             f.write(ocv_cam_param.model_dump_json(indent=4))
+
+    # using opencv to validate the camera parameters by projecting the 3d points to 2d
+    cv_projection_fmt = "data/opencv_param_{}_projected.png"
 
     def load_pointcloud(ply_path):
         pc = trimesh.load(ply_path)
@@ -297,5 +301,5 @@ if __name__ == "__main__":
         )
         preview_img = cv2.imread(render_im_path_fmt.format(idx))
         for pt in img_points:
-            cv2.circle(preview_img, (int(pt[0][0]), int(pt[0][1])), radius=2, color=(0, 255, 0), thickness=-1)
-        cv2.imwrite(f"data/scene_{idx}_projected.png", preview_img)
+            cv2.circle(preview_img, (int(pt[0][0]), int(pt[0][1])), radius=3, color=(0, 255, 0), thickness=-1)
+        cv2.imwrite(cv_projection_fmt.format(idx), preview_img)
