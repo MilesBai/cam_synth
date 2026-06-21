@@ -8,6 +8,7 @@ find_package(pybind11 REQUIRED)
 
 pybind11_add_module(_feat_extractor
     bindings.cpp
+    feat_extractor.cpp
 )
 
 target_include_directories(_feat_extractor PRIVATE
