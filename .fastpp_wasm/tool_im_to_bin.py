@@ -8,16 +8,13 @@ def convert_to_custom_binary(image_path, output_path):
     if img is None:
         raise FileNotFoundError(f"Could not load image from {image_path}")
 
-    # 2. Convert to grayscale
-    # Even though it's grayscale, we will retain the structural metadata
+    # 2. Convert OpenCV's default BGR image to packed RGB
     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
     # 3. Extract metadata
-    # For a grayscale image, channels = 1
+    # The output format is packed RGB, so channels == 3
     height, width, channels = rgb_img.shape
-
     # Stride (bytes per row) = width * channels * bytes_per_pixel
-    # Since it's uint8 (1 byte per pixel) and 1 channel, stride == width
+    # Since it's uint8 packed RGB, stride == width * channels
     stride = width * channels
 
     # 4. Prepare the binary header

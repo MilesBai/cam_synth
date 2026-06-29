@@ -44,7 +44,7 @@ static std::vector<Keypoint> FAST(const int w, const int h,
   for (int y = 3; y < h - 3; ++y) {
     for (int x = 3; x < w - 3; ++x) {
       float Ip = grayImageData[y * w + x];
-      float t = threshold < 1.f ? threshold * Ip : threshold;
+      float t = (threshold < 1.f) ? threshold * Ip : threshold;
 
       int bright = 0, dark = 0;
       for (int i = 0; i < 4; ++i) {
@@ -189,8 +189,9 @@ int fastpp(const int w, const int h, const unsigned char* rgbImageData,
     return -1;
 
   // RGB -> grayscale (luminance, integer approximation)
-  std::vector<uint8_t> gray(w * h);
-  for (int i = 0; i < w * h; ++i) {
+  int numPixels = w * h;
+  std::vector<uint8_t> gray(numPixels);
+  for (int i = 0; i < numPixels; ++i) {
     const unsigned char* p = rgbImageData + i * 3;
     gray[i] = (uint8_t)((77 * p[0] + 150 * p[1] + 29 * p[2]) >> 8);
   }
@@ -220,7 +221,8 @@ int fastpp(const int w, const int h, const unsigned char* rgbImageData,
             [](const Scored& a, const Scored& b) { return a.score > b.score; });
 
   int n = (int)std::min((int)scored.size(), maxPoints);
-  memset(outPointer, (int)-1.f, maxPoints * 4 * sizeof(float));
+  std::fill_n(outPointer, maxPoints * 4, -1.f);
+
   for (int i = 0; i < n; ++i) {
     outPointer[i * 4 + 0] = (float)scored[i].x;
     outPointer[i * 4 + 1] = (float)scored[i].y;
@@ -250,10 +252,13 @@ int main(int argc, char* argv[]) {
   }
 
   int32_t width, height, channels, stride;
-  f.read(reinterpret_cast<char*>(&width), sizeof(int32_t));
-  f.read(reinterpret_cast<char*>(&height), sizeof(int32_t));
-  f.read(reinterpret_cast<char*>(&channels), sizeof(int32_t));
-  f.read(reinterpret_cast<char*>(&stride), sizeof(int32_t));
+  if (f.read(reinterpret_cast<char*>(&width), sizeof(int32_t)) ||
+      f.read(reinterpret_cast<char*>(&height), sizeof(int32_t)) ||
+      f.read(reinterpret_cast<char*>(&channels), sizeof(int32_t)) ||
+      f.read(reinterpret_cast<char*>(&stride), sizeof(int32_t))) {
+    std::cout << "read header failed\n";
+    return 1;
+  }
 
   const int data_bytes = width * channels * height;
   std::vector<uint8_t> data(data_bytes);

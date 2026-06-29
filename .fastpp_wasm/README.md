@@ -12,6 +12,6 @@ cmake --build build/release
 build WASM
 
 ```
-emcmake cmake -S . -B .build_wasm
+emcmake cmake -S . -B build_wasm
 cmake --build build_wasm
 ```
