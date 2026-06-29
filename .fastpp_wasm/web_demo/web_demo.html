@@ -68,7 +68,7 @@
         let fastppMod = null;
 
         // Persistent WASM heap buffers, reallocated only on resolution change
-        let rgbPtr = 0, outPtr = 0;
+        let rgbaPtr = 0, outPtr = 0;
         let allocW = 0, allocH = 0;
 
         async function init() {
@@ -92,9 +92,9 @@
 
         function ensureBuffers(w, h) {
             if (allocW === w && allocH === h) return;
-            if (rgbPtr) fastppMod._free(rgbPtr);
+            if (rgbaPtr) fastppMod._free(rgbaPtr);
             if (outPtr) fastppMod._free(outPtr);
-            rgbPtr = fastppMod._malloc(w * h * 3);
+            rgbaPtr = fastppMod._malloc(w * h * 4);
             outPtr = fastppMod._malloc(MAX_POINTS * 4 * 4); // 4 floats × MAX_POINTS
             allocW = w;
             allocH = h;
@@ -111,16 +111,11 @@
             offCtx.drawImage(video, 0, 0, w, h);
             const rgba = offCtx.getImageData(0, 0, w, h).data;
 
-            // Convert RGBA → RGB directly in the WASM heap
-            const heap = fastppMod.HEAPU8;
-            for (let i = 0; i < w * h; i++) {
-                heap[rgbPtr + i * 3]     = rgba[i * 4];
-                heap[rgbPtr + i * 3 + 1] = rgba[i * 4 + 1];
-                heap[rgbPtr + i * 3 + 2] = rgba[i * 4 + 2];
-            }
+            // Bulk-copy RGBA directly into the WASM heap (no per-pixel JS loop)
+            fastppMod.HEAPU8.set(rgba, rgbaPtr);
 
             const t0 = performance.now();
-            const count = fastppMod._fastpp(w, h, rgbPtr, MAX_POINTS, outPtr);
+            const count = fastppMod._fastpp(w, h, rgbaPtr, MAX_POINTS, outPtr);
             const elapsed = (performance.now() - t0).toFixed(1);
 
             // Read back keypoints: each is [x, y, angle, score] as float32
@@ -136,7 +131,6 @@
                 });
             }
 
-            keypoints.sort((a, b) => b.score - a.score);
             keypoints.forEach((kp, i) => { kp.rank = i; });
 
             info.textContent = `${count} keypoints  |  ${elapsed} ms  |  ${w}×${h}`;
