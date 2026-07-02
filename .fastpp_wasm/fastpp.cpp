@@ -172,27 +172,28 @@ inline int computeHarrisResponse(const unsigned char* src, const int width,
 
 extern "C" {
 
-// Detects up to `maxPoints` interest points in a 3-channel (RGB) image.
+// Detects up to `maxPoints` interest points in a 4-channel (RGBA) image.
 //
 // Inputs:
-//   w, h          : image width and height in pixels
-//   rgbImageData  : pointer to a contiguous buffer of size w * h * 3 bytes
-//   (RGB, row-major order) maxPoints     : maximum number of keypoints to
-//   return outPointer    : caller-allocated buffer of maxPoints * 4 floats.
-//                   Layout per keypoint: [x, y, angle, response]
+//   w, h           : image width and height in pixels
+//   rgbaImageData  : pointer to a contiguous buffer of size w * h * 4 bytes
+//                    (RGBA, row-major order); alpha channel is ignored
+//   maxPoints      : maximum number of keypoints to return
+//   outPointer     : caller-allocated buffer of maxPoints * 4 floats.
+//                    Layout per keypoint: [x, y, angle, response]
 //
 // Returns:
 //   number of keypoints written (0..maxPoints), or negative on error.
-int fastpp(const int w, const int h, const unsigned char* rgbImageData,
+int fastpp(const int w, const int h, const unsigned char* rgbaImageData,
            const int maxPoints, float* outPointer) {
-  if (!rgbImageData || !outPointer || w <= 0 || h <= 0 || maxPoints <= 0)
+  if (!rgbaImageData || !outPointer || w <= 0 || h <= 0 || maxPoints <= 0)
     return -1;
 
-  // RGB -> grayscale (luminance, integer approximation)
+  // RGBA -> grayscale (luminance, integer approximation; alpha ignored)
   int numPixels = w * h;
   std::vector<uint8_t> gray(numPixels);
   for (int i = 0; i < numPixels; ++i) {
-    const unsigned char* p = rgbImageData + i * 3;
+    const unsigned char* p = rgbaImageData + i * 4;
     gray[i] = (uint8_t)((77 * p[0] + 150 * p[1] + 29 * p[2]) >> 8);
   }
 
