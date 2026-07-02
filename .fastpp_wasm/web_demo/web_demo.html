@@ -72,9 +72,22 @@
         let allocW = 0, allocH = 0;
 
         async function init() {
-            fastppMod = await FastppModule();
+            try {
+                fastppMod = await FastppModule();
+            } catch (err) {
+                console.error('Failed to load WASM module:', err);
+                info.textContent = `Error: failed to load WASM module (${err.message || err})`;
+                return;
+            }
+
             info.textContent = 'WASM ready — waiting for camera...';
-            await startCamera();
+
+            try {
+                await startCamera();
+            } catch (err) {
+                console.error('Failed to start camera:', err);
+                info.textContent = `Error: could not access camera (${err.message || err})`;
+            }
         }
 
         async function startCamera() {
