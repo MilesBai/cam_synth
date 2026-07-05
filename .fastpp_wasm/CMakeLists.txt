@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(fastpp CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/fastpp.cpp)

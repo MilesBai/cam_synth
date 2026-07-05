@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 
+#include "warm_pool.h"
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -27,7 +29,8 @@ struct Keypoint {
 
 static std::vector<Keypoint> FAST(const int w, const int h,
                                   const unsigned char* grayImageData, int N = 9,
-                                  float threshold = 0.15f, int nmsWindow = 2) {
+                                  float threshold = 0.15f, int nmsWindow = 2,
+                                  WarmPool* pool = nullptr) {
   // Bresenham circle radius-3 (16 pixels, clockwise from top)
   static const int cx[16] = {0, 1,  2,  3,  3,  3,  2,  1,
                              0, -1, -2, -3, -3, -3, -2, -1};
@@ -38,10 +41,14 @@ static std::vector<Keypoint> FAST(const int w, const int h,
   static const int cross_x[4] = {0, 3, 0, -3};
   static const int cross_y[4] = {-3, 0, 3, 0};
 
-  std::vector<Keypoint> keypoints;
   std::vector<float> corner_score(w * h, 0.f);
+  // one bucket per row: each parallel_for iteration only ever touches its own
+  // y, so writing into row_keypoints[y] needs no locking
+  std::vector<std::vector<Keypoint>> row_keypoints(h);
 
-  for (int y = 3; y < h - 3; ++y) {
+  auto process_row = [&](size_t y_) {
+    int y = (int)y_;
+    std::vector<Keypoint>& local = row_keypoints[y];
     for (int x = 3; x < w - 3; ++x) {
       float Ip = grayImageData[y * w + x];
       float t = (threshold < 1.f) ? threshold * Ip : threshold;
@@ -74,9 +81,20 @@ static std::vector<Keypoint> FAST(const int w, const int h,
       for (int i = 0; i < 16; ++i)
         score += std::fabs(Ip - grayImageData[(y + cy[i]) * w + (x + cx[i])]);
 
-      keypoints.push_back({x, y});
+      local.push_back({x, y});
       corner_score[y * w + x] = score;
     }
+  };
+
+  if (pool) {
+    pool->parallel_for(3, h - 3, process_row);
+  } else {
+    for (int y = 3; y < h - 3; ++y) process_row(y);
+  }
+
+  std::vector<Keypoint> keypoints;
+  for (auto& row : row_keypoints) {
+    keypoints.insert(keypoints.end(), row.begin(), row.end());
   }
 
   if (nmsWindow == 0) return keypoints;
@@ -197,8 +215,9 @@ int fastpp(const int w, const int h, const unsigned char* rgbaImageData,
     gray[i] = (uint8_t)((77 * p[0] + 150 * p[1] + 29 * p[2]) >> 8);
   }
 
-  // FAST corner detection
-  std::vector<Keypoint> kps = FAST(w, h, gray.data());
+  // FAST corner detection, parallelized across a persistent worker pool
+  static WarmPool pool(std::max(1u, std::thread::hardware_concurrency()));
+  std::vector<Keypoint> kps = FAST(w, h, gray.data(), 9, 0.15f, 2, &pool);
 
   // Score each FAST keypoint with Harris response
   struct Scored {
