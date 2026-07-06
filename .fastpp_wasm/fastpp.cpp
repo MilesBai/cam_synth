@@ -272,10 +272,10 @@ int main(int argc, char* argv[]) {
   }
 
   int32_t width, height, channels, stride;
-  if (f.read(reinterpret_cast<char*>(&width), sizeof(int32_t)) ||
-      f.read(reinterpret_cast<char*>(&height), sizeof(int32_t)) ||
-      f.read(reinterpret_cast<char*>(&channels), sizeof(int32_t)) ||
-      f.read(reinterpret_cast<char*>(&stride), sizeof(int32_t))) {
+  if (!f.read(reinterpret_cast<char*>(&width), sizeof(int32_t)) ||
+      !f.read(reinterpret_cast<char*>(&height), sizeof(int32_t)) ||
+      !f.read(reinterpret_cast<char*>(&channels), sizeof(int32_t)) ||
+      !f.read(reinterpret_cast<char*>(&stride), sizeof(int32_t))) {
     std::cout << "read header failed\n";
     return 1;
   }
